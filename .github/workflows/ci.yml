@@ -1,0 +1,88 @@
+name: Build CPPminer
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Linux x64 CPU and CUDA miner
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.88.0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential git curl unzip libomp-dev
+          python -m pip install 'cmake>=3.31'
+
+      - uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: "13.0.0"
+          method: network
+          sub-packages: '["nvcc", "cudart-dev", "cccl"]'
+
+      - name: Build miner
+        working-directory: CPPminer
+        run: ./build.sh --backend cpu,cuda --cuda-arch '75;80;86;89;90;90a;100;120'
+
+      - name: Package build artifacts
+        env:
+          BUILD_REF: ${{ github.ref_name }}
+          BUILD_SHA: ${{ github.sha }}
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          set -euo pipefail
+          version="git-${BUILD_SHA:0:12}"
+          if [[ "$IS_TAG" == true ]]; then version="$BUILD_REF"; fi
+
+          dist="$GITHUB_WORKSPACE/dist"
+          package="pearl-cppminer-${version}-linux-x64-cuda13"
+          stage="$(mktemp -d)"
+          mkdir -p "$dist" "$stage/$package"
+          install -m755 CPPminer/cppminer "$dist/cppminer"
+          install -m755 CPPminer/cppminer "$stage/$package/cppminer"
+          install -m644 CPPminer/torch_cuda_backend.so "$dist/torch_cuda_backend-linux-x64-cuda13.so"
+          install -m644 CPPminer/torch_cuda_backend.so "$stage/$package/torch_cuda_backend.so"
+          install -m644 CPPminer/README.md "$stage/$package/README.md"
+          tar -C "$stage" -czf "$dist/$package.tar.gz" "$package"
+          (cd "$dist" && sha256sum cppminer torch_cuda_backend-linux-x64-cuda13.so "$package.tar.gz" > "$package.sha256")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pearl-cppminer-linux-x64-cuda13
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish GitHub Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pearl-cppminer-linux-x64-cuda13
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: dist/*
