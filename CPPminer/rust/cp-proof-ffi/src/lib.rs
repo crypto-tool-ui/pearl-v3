@@ -7,7 +7,7 @@ mod e2e;
 mod pearl_net_crypto;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use flate2::{write::GzBuilder, Compression};
+use flate2::{GzBuilder, Compression};
 use mining_config::{mining_config_bytes, validate_tile_anchor};
 use pearl_blake3::{blake3_digest, pad_to_chunk_boundary_cow, MerkleProof, MerkleTree};
 use serde::{Deserialize, Serialize};

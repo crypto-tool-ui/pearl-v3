@@ -7,6 +7,7 @@ use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroizing;
 
 use crate::write_err;
+use crate::pearl_net_crypto;
 
 enum ClientHandshakeState {
     Legacy(StaticSecret),
