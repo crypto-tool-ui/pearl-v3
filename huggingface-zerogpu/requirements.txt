@@ -1,0 +1,6 @@
+spaces
+gradio>=5.0.0
+torch
+requests
+cmake
+ninja
