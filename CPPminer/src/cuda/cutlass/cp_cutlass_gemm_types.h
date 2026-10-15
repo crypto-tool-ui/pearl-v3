@@ -231,6 +231,10 @@ struct FusedMilestoneGemmOp {
     int smem = static_cast<int>(sizeof(typename GemmKernel::SharedStorage));
     CpCustomDeviceKernel<GemmKernel><<<grid, block, smem, stream>>>(params);
     cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+      fprintf(stderr, "[cutlass] CUDA kernel launch error: %s (%d)\n",
+              cudaGetErrorString(err), static_cast<int>(err));
+    }
     return (err == cudaSuccess) ? cutlass::Status::kSuccess
                                 : cutlass::Status::kErrorInternal;
   }
