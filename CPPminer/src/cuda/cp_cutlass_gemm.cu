@@ -46,36 +46,51 @@ static inline cudaError_t cp_cutlass_set_device_fast(int dev)
   return err;
 }
 
-static void cp_cutlass_configure_attributes(int dev)
+static bool cp_cutlass_set_attribute(
+    const void* kernel, cudaFuncAttribute attribute, int value,
+    const char* kernel_name)
+{
+  cudaError_t err = cudaFuncSetAttribute(kernel, attribute, value);
+  if (err != cudaSuccess) {
+    fprintf(stderr, "[cutlass] cudaFuncSetAttribute(%s, %d) failed: %s (%d)\n",
+            kernel_name, value, cudaGetErrorString(err), static_cast<int>(err));
+    return false;
+  }
+  return true;
+}
+
+static int cp_cutlass_configure_attributes(int dev)
 {
   const int dev_idx = (dev >= 0 && dev < MAX_GPUS) ? dev : 0;
-  if (g_configured_attributes[dev_idx]) return;
-  cp_cutlass_set_device_fast(dev);
+  if (g_configured_attributes[dev_idx]) return 0;
+  if (cp_cutlass_set_device_fast(dev) != cudaSuccess) return -1;
 
-  // Set shared memory carveout and max dynamic size on actual launched kernels: CpCustomDeviceKernel
-  const void* simt_row_ptr = (const void*)cp_cutlass::CpCustomDeviceKernel<typename cp_cutlass::Gemm128x128RowMajor::GemmKernel>;
-  cudaFuncSetAttribute(simt_row_ptr, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
-
-  const void* simt_step_ptr = (const void*)cp_cutlass::CpCustomDeviceKernel<typename cp_cutlass::Gemm128x128StepMajor::GemmKernel>;
-  cudaFuncSetAttribute(simt_step_ptr, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
-
-  const void* tensorop_row_ptr = (const void*)cp_cutlass::CpCustomDeviceKernel<typename cp_cutlass::Gemm128x128RowMajorTensorOp::GemmKernel>;
-  cudaFuncSetAttribute(tensorop_row_ptr, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
-  cudaFuncSetAttribute(tensorop_row_ptr, cudaFuncAttributeMaxDynamicSharedMemorySize, 65536);
-
-  const void* tensorop_step_ptr = (const void*)cp_cutlass::CpCustomDeviceKernel<typename cp_cutlass::Gemm128x128StepMajorTensorOp::GemmKernel>;
-  cudaFuncSetAttribute(tensorop_step_ptr, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
-  cudaFuncSetAttribute(tensorop_step_ptr, cudaFuncAttributeMaxDynamicSharedMemorySize, 65536);
-
-  const void* sm80_row_ptr = (const void*)cp_cutlass::CpCustomDeviceKernel<typename cp_cutlass::Gemm128x128RowMajorSm80TensorOp::GemmKernel>;
-  cudaFuncSetAttribute(sm80_row_ptr, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
-  cudaFuncSetAttribute(sm80_row_ptr, cudaFuncAttributeMaxDynamicSharedMemorySize, 98304);
-
-  const void* sm80_step_ptr = (const void*)cp_cutlass::CpCustomDeviceKernel<typename cp_cutlass::Gemm128x128StepMajorSm80TensorOp::GemmKernel>;
-  cudaFuncSetAttribute(sm80_step_ptr, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
-  cudaFuncSetAttribute(sm80_step_ptr, cudaFuncAttributeMaxDynamicSharedMemorySize, 98304);
-
+  cudaDeviceProp prop;
+  if (cudaGetDeviceProperties(&prop, dev) != cudaSuccess) return -1;
+  bool ok = true;
+  if (prop.major == 7 && prop.minor == 5) {
+    const void* row = (const void*)cp_cutlass::CpCustomDeviceKernel<typename cp_cutlass::Gemm128x128RowMajorTensorOp::GemmKernel>;
+    const void* step = (const void*)cp_cutlass::CpCustomDeviceKernel<typename cp_cutlass::Gemm128x128StepMajorTensorOp::GemmKernel>;
+    ok &= cp_cutlass_set_attribute(row, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared, "sm75-row-carveout");
+    ok &= cp_cutlass_set_attribute(row, cudaFuncAttributeMaxDynamicSharedMemorySize, 65536, "sm75-row-shared-memory");
+    ok &= cp_cutlass_set_attribute(step, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared, "sm75-step-carveout");
+    ok &= cp_cutlass_set_attribute(step, cudaFuncAttributeMaxDynamicSharedMemorySize, 65536, "sm75-step-shared-memory");
+  } else if (prop.major >= 8) {
+    const void* row = (const void*)cp_cutlass::CpCustomDeviceKernel<typename cp_cutlass::Gemm128x128RowMajorSm80TensorOp::GemmKernel>;
+    const void* step = (const void*)cp_cutlass::CpCustomDeviceKernel<typename cp_cutlass::Gemm128x128StepMajorSm80TensorOp::GemmKernel>;
+    ok &= cp_cutlass_set_attribute(row, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared, "sm80-row-carveout");
+    ok &= cp_cutlass_set_attribute(row, cudaFuncAttributeMaxDynamicSharedMemorySize, 98304, "sm80-row-shared-memory");
+    ok &= cp_cutlass_set_attribute(step, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared, "sm80-step-carveout");
+    ok &= cp_cutlass_set_attribute(step, cudaFuncAttributeMaxDynamicSharedMemorySize, 98304, "sm80-step-shared-memory");
+  } else {
+    const void* row = (const void*)cp_cutlass::CpCustomDeviceKernel<typename cp_cutlass::Gemm128x128RowMajor::GemmKernel>;
+    const void* step = (const void*)cp_cutlass::CpCustomDeviceKernel<typename cp_cutlass::Gemm128x128StepMajor::GemmKernel>;
+    ok &= cp_cutlass_set_attribute(row, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared, "simt-row-carveout");
+    ok &= cp_cutlass_set_attribute(step, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared, "simt-step-carveout");
+  }
+  if (!ok) return -1;
   g_configured_attributes[dev_idx] = 1;
+  return 0;
 }
 
 int cp_cutlass_device_ok(int dev)
@@ -151,7 +166,7 @@ int cp_cutlass_period_batch(
   }
 
   cutlass::Status st = cutlass::Status::kErrorInternal;
-  cp_cutlass_configure_attributes(dev);
+  if (cp_cutlass_configure_attributes(dev) != 0) return -1;
 
   const int arch_mode = cp_cutlass_get_arch_mode(dev);
   const int dev_idx = (dev >= 0 && dev < MAX_GPUS) ? dev : 0;
